@@ -65,7 +65,6 @@ import {
     applySolvedTypeVars,
     buildSolutionFromSpecializedClass,
     computeMroLinearization,
-    convertNodeToArg,
     convertToInstance,
     doForEachSignature,
     getTypeVarScopeId,
@@ -139,6 +138,7 @@ export function synthesizeDataClassMethods(
     // entries added by this class.
     const localDataClassEntries: DataClassEntry[] = [];
     const fullDataClassEntries: DataClassEntry[] = [];
+    const namedTupleEntries = new Set<string>();
     const allAncestorsKnown = addInheritedDataClassEntries(classType, fullDataClassEntries);
 
     if (!allAncestorsKnown) {
@@ -354,6 +354,7 @@ export function synthesizeDataClassMethods(
                 // Don't include class vars. PEP 557 indicates that they shouldn't
                 // be considered data class entries.
                 const variableSymbol = ClassType.getSymbolTable(classType).get(variableName);
+                namedTupleEntries.add(variableName);
 
                 if (variableSymbol?.isClassVar() && !variableSymbol?.isFinalVarInClassBody()) {
                     // If an ancestor class declared an instance variable but this dataclass
@@ -490,7 +491,9 @@ export function synthesizeDataClassMethods(
         }
     });
 
-    if (!isNamedTuple) {
+    if (isNamedTuple) {
+        classType.shared.namedTupleEntries = namedTupleEntries;
+    } else {
         classType.shared.dataClassEntries = localDataClassEntries;
     }
 
@@ -742,7 +745,7 @@ function getDefaultArgValueForFieldSpecifier(
         callTarget = evaluator.getBestOverloadForArgs(
             callNode,
             { type: callType, isIncomplete: callTypeResult.isIncomplete },
-            callNode.d.args.map((arg) => convertNodeToArg(arg))
+            callNode.d.args.map((arg) => evaluator.convertNodeToArg(arg))
         );
     } else if (isInstantiableClass(callType)) {
         const initMethodResult = getBoundInitMethod(evaluator, callNode, callType);
@@ -753,7 +756,7 @@ function getDefaultArgValueForFieldSpecifier(
                 callTarget = evaluator.getBestOverloadForArgs(
                     callNode,
                     { type: initMethodResult.type },
-                    callNode.d.args.map((arg) => convertNodeToArg(arg))
+                    callNode.d.args.map((arg) => evaluator.convertNodeToArg(arg))
                 );
             }
         }
@@ -1460,7 +1463,7 @@ export function applyDataClassDecorator(
         evaluator,
         errorNode,
         classType,
-        (callNode?.d.args ?? []).map((arg) => convertNodeToArg(arg)),
+        (callNode?.d.args ?? []).map((arg) => evaluator.convertNodeToArg(arg)),
         defaultBehaviors
     );
 }

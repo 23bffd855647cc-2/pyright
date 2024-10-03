@@ -13,7 +13,12 @@ import { DiagnosticAddendum } from '../common/diagnostic';
 import { LocAddendum } from '../localization/localize';
 import { ConstraintSolution, ConstraintSolutionSet } from './constraintSolution';
 import { ConstraintSet, ConstraintTracker, TypeVarConstraints } from './constraintTracker';
-import { maxSubtypesForInferredType, SolveConstraintsOptions, TypeEvaluator } from './typeEvaluatorTypes';
+import {
+    AssignTypeFlags,
+    maxSubtypesForInferredType,
+    SolveConstraintsOptions,
+    TypeEvaluator,
+} from './typeEvaluatorTypes';
 import {
     ClassType,
     combineTypes,
@@ -46,7 +51,6 @@ import {
 import {
     addConditionToType,
     applySolvedTypeVars,
-    AssignTypeFlags,
     buildSolutionFromSpecializedClass,
     convertToInstance,
     convertToInstantiable,
@@ -62,6 +66,7 @@ import {
     sortTypes,
     specializeTupleClass,
     specializeWithDefaultTypeArgs,
+    stripTypeForm,
     transformExpectedType,
     transformPossibleRecursiveTypeAlias,
 } from './typeUtils';
@@ -236,8 +241,9 @@ export function solveConstraintSet(
     constraintSet: ConstraintSet,
     options?: SolveConstraintsOptions
 ): ConstraintSolutionSet {
-    const solutionSet = new ConstraintSolutionSet(constraintSet.getScopeIds());
+    const solutionSet = new ConstraintSolutionSet();
 
+    // Solve the type variables.
     constraintSet.doForEachTypeVar((entry) => {
         solveTypeVarRecursive(evaluator, constraintSet, options, solutionSet, entry);
     });
@@ -502,7 +508,7 @@ export function addConstraintsForExpectedType(
 function stripLiteralsForLowerBound(evaluator: TypeEvaluator, typeVar: TypeVarType, lowerBound: Type) {
     return isTypeVarTuple(typeVar)
         ? stripLiteralValueForUnpackedTuple(evaluator, lowerBound)
-        : evaluator.stripLiteralValue(lowerBound);
+        : stripTypeForm(evaluator.stripLiteralValue(lowerBound));
 }
 
 function getTypeVarType(
@@ -581,9 +587,9 @@ function assignBoundTypeVar(
         return true;
     }
 
-    // Never is always assignable in a covariant context.
-    const isCovariant = (flags & (AssignTypeFlags.Invariant | AssignTypeFlags.Contravariant)) === 0;
-    if (isNever(srcType) && isCovariant) {
+    // Never is always assignable except in an invariant context.
+    const isInvariant = (flags & AssignTypeFlags.Invariant) !== 0;
+    if (isNever(srcType) && !isInvariant) {
         return true;
     }
 
@@ -801,16 +807,6 @@ function assignUnconstrainedTypeVar(
                 // source type.
                 newLowerBound = adjSrcType;
             } else {
-                // We need to widen the type.
-                if (constraints?.isLocked()) {
-                    diag?.addMessage(
-                        LocAddendum.typeAssignmentMismatch().format(
-                            evaluator.printSrcDestTypes(adjSrcType, curLowerBound)
-                        )
-                    );
-                    return false;
-                }
-
                 if (
                     evaluator.assignType(
                         adjSrcType,
@@ -968,14 +964,12 @@ function assignUnconstrainedTypeVar(
         }
     }
 
-    if (constraints && !constraints.isLocked()) {
-        constraints.setBounds(
-            destType,
-            newLowerBound,
-            newUpperBound,
-            (flags & (AssignTypeFlags.PopulateExpectedType | AssignTypeFlags.RetainLiteralsForTypeVar)) !== 0
-        );
-    }
+    constraints?.setBounds(
+        destType,
+        newLowerBound,
+        newUpperBound,
+        (flags & (AssignTypeFlags.PopulateExpectedType | AssignTypeFlags.RetainLiteralsForTypeVar)) !== 0
+    );
 
     return true;
 }
@@ -1154,9 +1148,7 @@ function assignConstrainedTypeVar(
                     recursionCount
                 )
             ) {
-                if (constraints && !constraints.isLocked()) {
-                    constraints.setBounds(destType, constrainedType, curUpperBound);
-                }
+                constraints?.setBounds(destType, constrainedType, curUpperBound);
             } else {
                 diag?.addMessage(
                     LocAddendum.typeConstrainedTypeVar().format({
@@ -1169,9 +1161,7 @@ function assignConstrainedTypeVar(
         }
     } else {
         // Assign the type to the type var.
-        if (constraints && !constraints.isLocked()) {
-            constraints.setBounds(destType, constrainedType, curUpperBound, retainLiterals);
-        }
+        constraints?.setBounds(destType, constrainedType, curUpperBound, retainLiterals);
     }
 
     return true;
@@ -1213,9 +1203,7 @@ function assignParamSpec(
                     }
                 }
             } else {
-                if (!constraints.isLocked()) {
-                    constraintSet.setBounds(destType, adjSrcType);
-                }
+                constraintSet.setBounds(destType, adjSrcType);
                 return;
             }
         } else if (isFunction(adjSrcType)) {
@@ -1270,9 +1258,7 @@ function assignParamSpec(
             }
 
             if (updateContextWithNewFunction) {
-                if (!constraints.isLocked()) {
-                    constraintSet.setBounds(destType, newFunction);
-                }
+                constraintSet.setBounds(destType, newFunction);
                 return;
             }
         } else if (isAnyOrUnknown(adjSrcType)) {
@@ -1334,7 +1320,7 @@ function stripLiteralValueForUnpackedTuple(evaluator: TypeEvaluator, type: Type)
 
     let strippedLiteral = false;
     const tupleTypeArgs: TupleTypeArg[] = type.priv.tupleTypeArgs.map((arg) => {
-        const strippedType = evaluator.stripLiteralValue(arg.type);
+        const strippedType = stripTypeForm(evaluator.stripLiteralValue(arg.type));
 
         if (strippedType !== arg.type) {
             strippedLiteral = true;

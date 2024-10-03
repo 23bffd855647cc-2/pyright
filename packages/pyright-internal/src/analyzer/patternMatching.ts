@@ -109,6 +109,7 @@ interface SequencePatternInfo {
     entryTypes: Type[];
     isIndeterminateLength?: boolean;
     isTuple?: boolean;
+    isUnboundedTuple?: boolean;
 }
 
 interface MappingPatternInfo {
@@ -225,7 +226,7 @@ function narrowTypeBasedOnSequencePattern(
         // contains indeterminate-length entries or the tuple is of indeterminate
         // length.
         if (!isPositiveTest) {
-            if (entry.isIndeterminateLength) {
+            if (entry.isIndeterminateLength || entry.isUnboundedTuple) {
                 canNarrowTuple = false;
             }
 
@@ -842,16 +843,20 @@ function narrowTypeBasedOnClassPattern(
             pattern.d.className
         );
         return NeverType.createNever();
-    } else if (
-        isInstantiableClass(exprType) &&
-        ClassType.isProtocolClass(exprType) &&
-        !ClassType.isRuntimeCheckable(exprType)
-    ) {
-        evaluator.addDiagnostic(
-            DiagnosticRule.reportGeneralTypeIssues,
-            LocAddendum.protocolRequiresRuntimeCheckable(),
-            pattern.d.className
-        );
+    } else if (isInstantiableClass(exprType)) {
+        if (ClassType.isProtocolClass(exprType) && !ClassType.isRuntimeCheckable(exprType)) {
+            evaluator.addDiagnostic(
+                DiagnosticRule.reportGeneralTypeIssues,
+                LocAddendum.protocolRequiresRuntimeCheckable(),
+                pattern.d.className
+            );
+        } else if (ClassType.isTypedDictClass(exprType)) {
+            evaluator.addDiagnostic(
+                DiagnosticRule.reportGeneralTypeIssues,
+                LocMessage.typedDictInClassPattern(),
+                pattern.d.className
+            );
+        }
     }
 
     return evaluator.mapSubtypesExpandTypeVars(
@@ -1436,6 +1441,7 @@ function getSequencePatternInfo(
                             entryTypes: isDefiniteNoMatch ? [] : typeArgs.map((t) => t.type),
                             isIndeterminateLength: false,
                             isTuple: true,
+                            isUnboundedTuple: tupleIndeterminateIndex >= 0,
                             isDefiniteNoMatch,
                             isPotentialNoMatch,
                         });
@@ -1488,6 +1494,7 @@ function getSequencePatternInfo(
                                 entryTypes: isDefiniteNoMatch ? [] : typeArgs.map((t) => t.type),
                                 isIndeterminateLength: false,
                                 isTuple: true,
+                                isUnboundedTuple: tupleIndeterminateIndex >= 0,
                                 isDefiniteNoMatch,
                             });
                             return;
